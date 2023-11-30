@@ -1,0 +1,22 @@
+{
+    "name": "showx/statshow",
+    "description" : "statistics工具",
+    "type": "application",
+    "keywords": ["workerman","php","statistics","statshow"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "showx",
+            "email": "9448923@qq.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.0.0"
+    },
+    "_comment": "statshow统计项目利器",
+    "autoload": {
+        "psr-4": {
+            "statshow\\": "src/"
+        }
+    }
+}

@@ -1,30 +1,43 @@
 # statshow
-API监控使用,tcp涉及协议解释，暂定使用http来收集上报。
-模式定时读取文件，统一上报。
+statshow一个简易的API监控服务器，statstics监控项目使用
+
+# 使用
+
+```PHP
+require dirname(__FILE__).'/vendor/autoload.php';
+
+$server = new \statshow\StatShow('0.0.0.0', 8081);
+$server->start();
+```
 
 # 所需组件
 1. redis
 2. php
+   （gd扩展，event扩展）
+3. libevent
 
 # todolist
-1. 基本uri请求统计
-2. highcharts图表的展示
+highcharts图表的展示
 
 
 
-# 腾讯云日志服务
+# 其它
+第三方比较好用的数据检索
+
+## 腾讯云日志服务
 https://cloud.tencent.com/document/product/614/47044
 
-检索分析日志
+## 检索分析日志
 https://cloud.tencent.com/document/product/614/56447
 https://cloud.tencent.com/document/product/614/47044
 
+
+### 查看访问量比较多的uri
 * | select uri,histogram (cast (__TIMESTAMP__ as timestamp) ,interval 1 minute) as analytic_time, count (*) as log_count group by uri order by analytic_time limit 1000
 
-## 查看访问量比较多的uri
 * | select uri, count (*) as log_count group by uri order by log_count desc limit 1000
 
-## 查看访问量比较多的ip
+### 查看访问量比较多的ip
 * | select remote_addr, count (*) as log_count group by remote_addr order by log_count desc limit 1000
 
 * | select remote_addr,ip_to_city(remote_addr),uri, count (*) as log_count group by remote_addr,uri order by log_count desc
