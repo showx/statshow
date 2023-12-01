@@ -9,6 +9,10 @@ class StatShow {
     public static $webpath = '/bangbangbong1';
     private $connections = 0; // 初始化为 0
 
+    public $activeConnections = [];
+
+    public $maxConnections = 1000;
+
     public function __construct($host = '0.0.0.0', $port = 8081) {
         $this->host = $host;
         $this->port = $port;
@@ -53,6 +57,18 @@ class StatShow {
     }
 
     private function handleConnection($connection) {
+
+        // if (count($this->activeConnections) >= $this->maxConnections) {
+        if (count(Reactor::getInstance()->events_read) >= $this->maxConnections) {
+            // 如果当前活动连接数已达到最大值，拒绝新连接
+            echo "连接已满，请稍后再试。\n";
+
+            // 并发量太大的时候直接关闭
+            fclose($connection); // 关闭连接
+            return;
+        }
+        $this->activeConnections[] = $connection;
+
         $conn = new Connection($connection);
         unset($conn);
         // $this->connections[] = $conn;
@@ -62,6 +78,13 @@ class StatShow {
         echo "可写事件总数：".count(Reactor::getInstance()->events_write).PHP_EOL;
         // var_dump(Reactor::getInstance()->events);
     }
+
+    // public function removeActiveConnection($connection) {
+    //     $index = array_search($connection, $this->activeConnections);
+    //     if ($index !== false) {
+    //         unset($this->activeConnections[$index]);
+    //     }
+    // }
 
     public function handleSignal($signo) {
         switch ($signo) {

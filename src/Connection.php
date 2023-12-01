@@ -18,13 +18,43 @@ class Connection {
     private function handleRead() {
         if (is_resource($this->connection)) {
             // 一般4096就够
-            // 不允许发送过长，主要不接收完，会不会触发不了write事件
-            $this->read_buffer .= fread($this->connection, 65535);
-
-            // while ($content = fread($this->connection, 65535)) {
-            //     $this->read_buffer .= $content;
-            // }
+            // $this->read_buffer .= fread($this->connection, 65535);
+            while ($data = fread($this->connection, 4096)) {
+                // echo $data.PHP_EOL;
+                // 将读取到的数据追加到缓冲区中
+                $this->read_buffer .= $data;
+                if (strlen($this->read_buffer) >= 10240) {
+                    break; 
+                }
+            }
         }
+
+        // $connection_eof = feof($this->connection);
+        // echo "conneciton_eof:".(int)$connection_eof.PHP_EOL;
+
+        // array(7) {
+        //     ["timed_out"]=>
+        //     bool(false)
+        //     ["blocked"]=>
+        //     bool(false)
+        //     ["eof"]=>
+        //     bool(false)
+        //     ["stream_type"]=>
+        //     string(14) "tcp_socket/ssl"
+        //     ["mode"]=>
+        //     string(2) "r+"
+        //     ["unread_bytes"]=>
+        //     int(0)
+        //     ["seekable"]=>
+        //     bool(false)
+        //   }
+        // $meta = stream_get_meta_data($this->connection);
+        // echo "meta:".var_dump($meta);
+        // echo "meta:".$meta['unread_bytes'].PHP_EOL;
+        // if($meta['unread_bytes'] != 0){
+        //     echo 'no';exit();
+        // }
+
         // echo "read:".$read_buffer.PHP_EOL."XXXXXXXX".PHP_EOL;
         if (!empty($this->read_buffer)) {
             echo 'read'.PHP_EOL;
@@ -65,7 +95,13 @@ class Connection {
             }
             Reactor::getInstance()->add($this->connection, Reactor::WRITE, function ($connection) use ($response_send) {
                 echo "write".PHP_EOL;
-                fwrite($connection, $response_send);
+                $bytes_written = fwrite($connection, $response_send);
+                if ($bytes_written !== false) {
+                    echo "Data sent successfully. $bytes_written bytes written.";
+                } else {
+                    Reactor::getInstance()->base->exit();
+                    echo "Failed to send data.";exit();
+                }
                 fclose($connection);
                 $this->closeConnection($connection, Reactor::WRITE);
             });
@@ -86,6 +122,11 @@ class Connection {
         // if($flag == Reactor::READ){
         //     fclose($connection);
         // }
+
+        if($flag == Reactor::READ){
+            
+        }
+
         Reactor::getInstance()->remove($connection, $flag); // 移除事件监听
     }
 }
