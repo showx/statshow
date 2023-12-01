@@ -1,0 +1,1 @@
+<h1>StatShow</h1><h2>time:{{time}}</h2>

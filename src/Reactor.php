@@ -1,8 +1,12 @@
 <?php
 namespace statshow;
 class Reactor {
-    protected $base;
+    public $base;
     public $events = [];
+    public $events_read = [];
+    public $events_write = [];
+    const READ = \Event::READ | \Event::PERSIST;
+    const WRITE = \Event::WRITE | \Event::PERSIST;
     protected static $instance  = null;
 
     public static function getInstance(){
@@ -21,7 +25,15 @@ class Reactor {
         $status = $event->add();
         if($status){
             $socketid = (int)$socket;
-            $this->events[$socketid] = $event;
+
+            if($flags == self::READ){
+                $this->events_read[$socketid] = $event;
+            }elseif($flags == self::WRITE){
+                $this->events_write[$socketid] = $event;
+            }else{
+                // 其它的暂时不考虑
+            }
+            // $this->events[$socketid] = $event;
 
             // 超时检测
             // $this->addTimeoutCheck($socket, $event);
@@ -29,11 +41,18 @@ class Reactor {
         // echo 'add_event:'.$socketid.PHP_EOL;
     }
 
-    public function remove(mixed $socket){
+    public function remove(mixed $socket, $flag){
         $socketid = (int)$socket;
-        $this->events[$socketid]->del();
-        $this->events[$socketid]->free();
-        unset($this->events[$socketid]);
+        if($flag == self::READ){
+            $this->events_read[$socketid]->del();
+            // $this->events_read[$socketid]->free();
+            unset($this->events_read[$socketid]);
+        }elseif($flag == self::WRITE){
+            $this->events_write[$socketid]->del();
+            // $this->events_write[$socketid]->free();
+            unset($this->events_write[$socketid]);
+        }
+        
     }
 
     private function addTimeoutCheck($socket, $event) {

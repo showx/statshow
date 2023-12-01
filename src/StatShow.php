@@ -1,6 +1,6 @@
 <?php
 namespace statshow;
-
+define("STATPATH", dirname(__FILE__));
 class StatShow {
     private $host;
     private $port;
@@ -38,6 +38,9 @@ class StatShow {
         if($errno != 0){
             die("socket创建失败");
         }
+        $socket = socket_import_stream($this->socket);
+        socket_set_option($socket, SOL_SOCKET, SO_KEEPALIVE, 1);
+        socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
         stream_set_blocking($this->socket, 0);
         pcntl_signal(SIGTERM, [$this, 'handleSignal']);
         Reactor::getInstance()->add($this->socket, \Event::READ | \Event::PERSIST, function($socket) {
@@ -55,7 +58,8 @@ class StatShow {
         // $this->connections[] = $conn;
         $this->connections++;
         echo "现在的连接数：".$this->connections.PHP_EOL;
-        echo "事件总数：".count(Reactor::getInstance()->events).PHP_EOL;
+        echo "可读事件总数：".count(Reactor::getInstance()->events_read).PHP_EOL;
+        echo "可写事件总数：".count(Reactor::getInstance()->events_write).PHP_EOL;
         // var_dump(Reactor::getInstance()->events);
     }
 
