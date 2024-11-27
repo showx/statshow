@@ -2,89 +2,162 @@
 namespace statshow;
 define("STATPATH", dirname(__FILE__));
 class StatShow {
-    private $host;
-    private $port;
+    private $host = '0.0.0.0';
+    private $port = 8081;
     private $socket = null;
     public $config = null;
-    public static $webpath = '/bangbangbong1';
-    private $connections = 0; // 初始化为 0
-
-    public $activeConnections = [];
-
+    public static $webpath = '/stats';
+    private $connections = 0;
+    private $activeConnections = [];
     public $maxConnections = 1000;
 
-    public function __construct($host = '0.0.0.0', $port = 8081) {
-        $this->host = $host;
-        $this->port = $port;
+    public function __construct($host = null, $port = null) {
+        if ($host !== null) {
+            $this->host = $host;
+        }
+        if ($port !== null) {
+            $this->port = (int)$port;
+        }
     }
 
     /**
      *  注入配置
      */
-    public function setConfig(Config $config){
+    public function setConfig(Config $config) {
         $this->config = $config;
+        
+        // 明确获取基本配置项
+        $host = $config->get('host');
+        $port = $config->get('port');
+        $webpath = $config->get('webpath');
+        
+        // 类型检查和转换
+        if (!is_string($host)) {
+            throw new \RuntimeException('Host must be a string');
+        }
+        if (!is_numeric($port)) {
+            throw new \RuntimeException('Port must be a number');
+        }
+        if (!is_string($webpath)) {
+            throw new \RuntimeException('Webpath must be a string');
+        }
+        
+        $this->host = $host;
+        $this->port = (int)$port;
+        self::$webpath = $webpath;
+        
+        // 其他配置项
+        $maxConnections = $config->get('max_connections');
+        if (is_numeric($maxConnections)) {
+            $this->maxConnections = (int)$maxConnections;
+        }
     }
 
     public function start() {
-
-        if($this->config){
-            $this->host = $this->config->getHost();
-            $this->port = $this->config->getPort();
-            self::$webpath = $this->config->getWebPath();
+        // 验证配置
+        if (empty($this->host) || !is_string($this->host)) {
+            throw new \RuntimeException('Invalid host configuration');
+        }
+        if (empty($this->port) || !is_int($this->port)) {
+            throw new \RuntimeException('Invalid port configuration');
         }
 
         cli_set_process_title("statshow");
         global $argv;
-        if(in_array("-d", $argv)){
+        if (in_array("-d", $argv)) {
             $this->daemonize();
         }
-        $this->socket = stream_socket_server("tcp://$this->host:$this->port", $errno, $errstr);
-        if($errno != 0){
-            die("socket创建失败");
+
+        // 创建服务器socket
+        $context = stream_context_create([
+            'socket' => [
+                'so_reuseaddr' => true,
+                'backlog' => 128
+            ]
+        ]);
+
+        $address = sprintf("tcp://%s:%d", $this->host, $this->port);
+        $this->socket = @stream_socket_server(
+            $address,
+            $errno,
+            $errstr,
+            STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
+            $context
+        );
+        
+        if (!$this->socket) {
+            throw new \RuntimeException(
+                sprintf("Failed to create server socket: %s (%d)", $errstr, $errno)
+            );
         }
-        $socket = socket_import_stream($this->socket);
-        socket_set_option($socket, SOL_SOCKET, SO_KEEPALIVE, 1);
-        socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
+
+        // 设置非阻塞模式
         stream_set_blocking($this->socket, 0);
+
+        // 如果安装了sockets扩展，设置额外的socket选项
+        if (extension_loaded('sockets')) {
+            $socket = socket_import_stream($this->socket);
+            if ($socket) {
+                socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
+                socket_set_option($socket, SOL_SOCKET, SO_KEEPALIVE, 1);
+                socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
+            }
+        }
+
+        echo sprintf("Server started at %s:%d\n", $this->host, $this->port);
+
         pcntl_signal(SIGTERM, [$this, 'handleSignal']);
-        Reactor::getInstance()->add($this->socket, \Event::READ | \Event::PERSIST, function($socket) {
-            $connection = stream_socket_accept($socket);
+        
+        Reactor::getInstance()->add($this->socket, Reactor::READ, function($socket) {
+            $connection = @stream_socket_accept($socket);
             if ($connection) {
                 $this->handleConnection($connection);
             }
         });
+        
         Reactor::getInstance()->loop();
     }
 
     private function handleConnection($connection) {
+        try {
+            if (!is_resource($connection)) {
+                error_log("Invalid connection resource");
+                return;
+            }
 
-        // if (count($this->activeConnections) >= $this->maxConnections) {
-        if (count(Reactor::getInstance()->events_read) >= $this->maxConnections) {
-            // 如果当前活动连接数已达到最大值，拒绝新连接
-            echo "连接已满，请稍后再试。\n";
-
-            // 并发量太大的时候直接关闭
-            fclose($connection); // 关闭连接
-            return;
+            if (count(Reactor::getInstance()->events_read) >= $this->maxConnections) {
+                error_log("连接数已达到最大限制: {$this->maxConnections}");
+                fclose($connection);
+                return;
+            }
+            
+            $connectionId = (int)$connection;
+            $this->activeConnections[$connectionId] = $connection;
+            $this->connections++;
+            
+            try {
+                // 确保配置对象存在
+                if (!$this->config) {
+                    throw new \RuntimeException("Server configuration is not set");
+                }
+                
+                // 创建连接
+                $conn = new Connection($connection, new Stats($this->config));
+                
+                Reactor::getInstance()->addConnectionCloseCallback($connectionId, function() use ($connectionId) {
+                    unset($this->activeConnections[$connectionId]);
+                    $this->connections--;
+                });
+            } catch (\Exception $e) {
+                error_log("Failed to create connection: " . $e->getMessage());
+                fclose($connection);
+                unset($this->activeConnections[$connectionId]);
+                $this->connections--;
+            }
+        } catch (\Exception $e) {
+            error_log("Error handling connection: " . $e->getMessage());
         }
-        $this->activeConnections[] = $connection;
-
-        $conn = new Connection($connection);
-        unset($conn);
-        // $this->connections[] = $conn;
-        $this->connections++;
-        echo "现在的连接数：".$this->connections.PHP_EOL;
-        echo "可读事件总数：".count(Reactor::getInstance()->events_read).PHP_EOL;
-        echo "可写事件总数：".count(Reactor::getInstance()->events_write).PHP_EOL;
-        // var_dump(Reactor::getInstance()->events);
     }
-
-    // public function removeActiveConnection($connection) {
-    //     $index = array_search($connection, $this->activeConnections);
-    //     if ($index !== false) {
-    //         unset($this->activeConnections[$index]);
-    //     }
-    // }
 
     public function handleSignal($signo) {
         switch ($signo) {

@@ -7,6 +7,7 @@ class HttpRequest {
     private $body;
 
     public function parse($request) {
+        error_log("Parsing HTTP request:\n" . $request);
         $this->headers = [];
         $this->body = '';
 

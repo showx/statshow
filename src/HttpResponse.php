@@ -1,5 +1,6 @@
 <?php
 namespace statshow;
+
 class HttpResponse {
     private $statusCode;
     private $headers;
@@ -9,6 +10,10 @@ class HttpResponse {
         $this->statusCode = 200;
         $this->headers = [];
         $this->body = '';
+    }
+
+    public function getStatusCode() {
+        return $this->statusCode;
     }
 
     public function setStatusCode($code) {
@@ -26,12 +31,16 @@ class HttpResponse {
     public function build() {
         $response = "HTTP/1.1 $this->statusCode " . $this->getStatusCodeText() . "\r\n";
 
+        $this->headers['Content-Length'] = strlen($this->body);
+
         foreach ($this->headers as $key => $value) {
             $response .= "$key: $value\r\n";
         }
 
-        $response .= "\r\n";
-        $response .= $this->body;
+        $response .= "\r\n" . $this->body;
+
+        error_log("Response headers: " . print_r($this->headers, true));
+        error_log("Response body length: " . strlen($this->body));
 
         return $response;
     }
@@ -40,9 +49,9 @@ class HttpResponse {
         $statusTexts = [
             200 => 'OK',
             404 => 'Not Found',
-            // Add more status codes as needed...
+            500 => 'Internal Server Error'
         ];
 
-        return isset($statusTexts[$this->statusCode]) ? $statusTexts[$this->statusCode] : '';
+        return $statusTexts[$this->statusCode] ?? 'Unknown';
     }
 }

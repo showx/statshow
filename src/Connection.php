@@ -4,129 +4,138 @@ namespace statshow;
 class Connection {
     private $connection;
     public $read_buffer = '';
+    private $maxBufferSize = 10240; // 10KB
+    private $readChunkSize = 4096;  // 4KB
+    private $stats;
+    private $startTime;
 
-    public function __construct($connection) {
+    public function __construct($connection, Stats $stats) {
         $this->connection = $connection;
-        stream_set_blocking($this->connection, 0);
-        stream_set_read_buffer($this->connection, 0);
+        $this->stats = $stats;
+        $this->startTime = microtime(true);
+        
+        if (!is_resource($connection)) {
+            throw new \RuntimeException("Invalid connection resource");
+        }
+        
+        stream_set_blocking($connection, 0);
+        stream_set_read_buffer($connection, 0);
 
-        Reactor::getInstance()->add($this->connection, Reactor::READ, function ($connection) {
-            $this->handleRead();
-        });
+        Reactor::getInstance()->add($connection, Reactor::READ, [$this, 'handleRead']);
     }
 
-    private function handleRead() {
-        if (is_resource($this->connection)) {
-            // 一般4096就够
-            // $this->read_buffer .= fread($this->connection, 65535);
-            while ($data = fread($this->connection, 4096)) {
-                // echo $data.PHP_EOL;
-                // 将读取到的数据追加到缓冲区中
-                $this->read_buffer .= $data;
-                if (strlen($this->read_buffer) >= 10240) {
-                    break; 
+    public function handleRead() {
+        try {
+            // 读取数据
+            $data = fread($this->connection, $this->readChunkSize);
+            if ($data === false || $data === '') {
+                if (feof($this->connection)) {
+                    $this->close();
                 }
+                return;
             }
+            
+            $this->read_buffer .= $data;
+            
+            // 检查是否收到完整的 HTTP 请求
+            if (strpos($this->read_buffer, "\r\n\r\n") !== false) {
+                $this->processRequest();
+            }
+            
+        } catch (\Exception $e) {
+            error_log("Error in handleRead: " . $e->getMessage());
+            $this->close();
         }
+    }
 
-        // $connection_eof = feof($this->connection);
-        // echo "conneciton_eof:".(int)$connection_eof.PHP_EOL;
-
-        // array(7) {
-        //     ["timed_out"]=>
-        //     bool(false)
-        //     ["blocked"]=>
-        //     bool(false)
-        //     ["eof"]=>
-        //     bool(false)
-        //     ["stream_type"]=>
-        //     string(14) "tcp_socket/ssl"
-        //     ["mode"]=>
-        //     string(2) "r+"
-        //     ["unread_bytes"]=>
-        //     int(0)
-        //     ["seekable"]=>
-        //     bool(false)
-        //   }
-        // $meta = stream_get_meta_data($this->connection);
-        // echo "meta:".var_dump($meta);
-        // echo "meta:".$meta['unread_bytes'].PHP_EOL;
-        // if($meta['unread_bytes'] != 0){
-        //     echo 'no';exit();
-        // }
-
-        // echo "read:".$read_buffer.PHP_EOL."XXXXXXXX".PHP_EOL;
-        if (!empty($this->read_buffer)) {
-            echo 'read'.PHP_EOL;
-            // 这里
-            // echo "read:".$read_buffer . PHP_EOL;
-            // 解析 JSON
-            $jsondata = json_decode($this->read_buffer, true);
-            $response_send = 'ok';
-            if ($jsondata !== null) {
-                // tcp表示已经接收成功
-                $response_send = "ok";
+    private function processRequest() {
+        try {
+            $parser = new HttpRequest();
+            $parser->parse($this->read_buffer);
+            
+            $method = $parser->getMethod();
+            $path = $parser->getPath();
+            $ip = $this->getClientIp();
+            
+            error_log("Processing request: $method $path");
+            
+            // 创建响应
+            $response = new HttpResponse();
+            $response->addHeader('Connection', 'close');
+            
+            if ($path === StatShow::$webpath) {
+                // 处理统计页面请求
+                $response->setStatusCode(200);
+                $response->addHeader('Content-Type', 'text/html; charset=utf-8');
+                $template = new Tpl('templates/stats.tpl');
+                $response->setBody($template->render());
             } else {
-                $parser = new HttpRequest();
-                $parser->parse($this->read_buffer);
-                
-                $method = $parser->getMethod();
-                $path = $parser->getPath();
-                // 看看会不会阻塞, 会阻塞掉
-                // sleep(10);
-                if($method == 'GET'){
-                    if($path == StatShow::$webpath){
-                        // 使用示例
-                        $response = new HttpResponse();
-                        $response->setStatusCode(200);
-                        $response->addHeader('Content-Type', 'text/html');
-                        $template = new Tpl('welcome.tpl');
-                        $variables = [
-                            'time' => time()
-                        ];
-                        
-                        $body = $template->render($variables);
-                        $response->setBody($body);
-                        $http_response =  $response->build();
-                        $response_send = $http_response;
-    
-                    }
-                }
+                // 404 响应
+                $response->setStatusCode(404);
+                $response->setBody('Not Found');
             }
-            Reactor::getInstance()->add($this->connection, Reactor::WRITE, function ($connection) use ($response_send) {
-                echo "write".PHP_EOL;
-                $bytes_written = fwrite($connection, $response_send);
-                if ($bytes_written !== false) {
-                    echo "Data sent successfully. $bytes_written bytes written.";
-                } else {
-                    Reactor::getInstance()->base->exit();
-                    echo "Failed to send data.";exit();
-                }
-                fclose($connection);
-                $this->closeConnection($connection, Reactor::WRITE);
-            });
-            $this->closeConnection($this->connection, Reactor::READ);
             
-        } else {
-            // var_dump($this->connection);
-            echo 'E_close'.PHP_EOL;
-            // 处理连接关闭
-            fclose($this->connection);
-            $this->closeConnection($this->connection, Reactor::READ);
-            // Reactor::getInstance()->base->exit();
-
+            // 发送响应
+            $responseStr = $response->build();
+            $this->sendResponse($responseStr);
+            
+            // 记录统计
+            $requestTime = (microtime(true) - $this->startTime) * 1000;
+            $this->stats->record($method, $path, $ip, $requestTime, $response->getStatusCode());
+            
+        } catch (\Exception $e) {
+            error_log("Error processing request: " . $e->getMessage());
+        } finally {
+            // 确保连接关闭
+            $this->close();
         }
     }
-    private function closeConnection($connection, $flag) {
-        echo 'close|'.$flag.PHP_EOL;
-        // if($flag == Reactor::READ){
-        //     fclose($connection);
-        // }
 
-        if($flag == Reactor::READ){
-            
+    private function sendResponse($responseStr) {
+        if (!is_resource($this->connection)) {
+            return;
         }
 
-        Reactor::getInstance()->remove($connection, $flag); // 移除事件监听
+        try {
+            // 设置写超时
+            stream_set_timeout($this->connection, 5);
+            
+            // 写入响应
+            $written = fwrite($this->connection, $responseStr);
+            if ($written === false) {
+                error_log("Failed to write response");
+                return;
+            }
+            
+            error_log("Response sent: $written bytes");
+            fflush($this->connection);
+            
+        } catch (\Exception $e) {
+            error_log("Error sending response: " . $e->getMessage());
+        }
+    }
+
+    private function close() {
+        if (!is_resource($this->connection)) {
+            return;
+        }
+
+        try {
+            error_log("Closing connection");
+            fflush($this->connection);
+            stream_socket_shutdown($this->connection, STREAM_SHUT_RDWR);
+            fclose($this->connection);
+            
+            // 移除事件监听
+            Reactor::getInstance()->remove($this->connection, Reactor::READ);
+            
+        } catch (\Exception $e) {
+            error_log("Error closing connection: " . $e->getMessage());
+        }
+    }
+
+    private function getClientIp() {
+        $info = stream_socket_get_name($this->connection, true);
+        return trim(explode(':', $info)[0]);
     }
 }
